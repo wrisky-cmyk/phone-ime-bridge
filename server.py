@@ -3,6 +3,7 @@
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import parse_qs
 from pathlib import Path
+import shutil
 import subprocess
 import time
 import json
@@ -13,6 +14,7 @@ WEB_DIR = Path(__file__).parent / "web"
 
 
 def get_focused_window():
+    # Niri
     try:
         r = subprocess.run(
             ["niri", "msg", "--json", "windows"],
@@ -25,19 +27,39 @@ def get_focused_window():
                 return {
                     "app_id": (win.get("app_id") or "").lower(),
                     "title": (win.get("title") or "").lower(),
+                    "xwayland": bool(win.get("is_x11", False)),
                 }
     except Exception as e:
         print("get focused window failed:", e)
 
-    return {"app_id": "", "title": ""}
+    # Hyprland
+    try:
+        r = subprocess.run(
+            ["hyprctl", "activewindow", "-j"],
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        data = json.loads(r.stdout)
+        if isinstance(data, dict):
+            return {
+                "app_id": (data.get("class") or data.get("initialClass") or "").lower(),
+                "title": (data.get("title") or "").lower(),
+                "xwayland": bool(data.get("xwayland", False)),
+            }
+    except Exception as e:
+        print("get focused window (hyprland) failed:", e)
+
+    return {"app_id": "", "title": "", "xwayland": False}
 
 
-def detect_mode():
-    win = get_focused_window()
+def detect_mode(win=None):
+    if win is None:
+        win = get_focused_window()
     app_id = win["app_id"]
     title = win["title"]
 
-    print("focused:", app_id, "|", title)
+    print("focused:", app_id, "|", title, "| xwayland:", win.get("xwayland", False))
 
     if any(x in app_id for x in ["wechat", "weixin", "qq"]) or any(
         x in title for x in ["微信", "qq"]
@@ -54,9 +76,11 @@ def detect_mode():
         "alacritty",
         "wezterm",
         "terminator",
+        "gnome-terminal",
+        "org.gnome.terminal",
+        "x-terminal-emulator",
         "xfce4-terminal",
         "konsole",
-        "gnome-terminal",
     ]):
         return "terminal"
     return "normal"
@@ -88,11 +112,23 @@ def paste_with_wtype():
     )
 
 
-def paste_with_crossmacro():
+def paste_with_xdotool(shift: bool = False):
+    keys = ["ctrl+shift+v"] if shift else ["ctrl+v"]
     subprocess.run(
-        ["crossmacro", "run", "--step", "tap ctrl+v"],
+        ["xdotool", "key", "--clearmodifiers", *keys],
         check=False,
     )
+
+
+def paste_with_crossmacro():
+    try:
+        subprocess.run(
+            ["crossmacro", "run", "--step", "tap ctrl+v"],
+            check=False,
+        )
+    except FileNotFoundError:
+        print("crossmacro not found, falling back to wtype paste")
+        paste_with_wtype()
 
 
 def send_by_clipboard(text: str, paste_func):
@@ -109,14 +145,26 @@ def send_by_wtype(text: str):
     )
 
 def send_text(text: str):
-    mode = detect_mode()
+    win = get_focused_window()
+    mode = detect_mode(win)
+    xwayland = bool(win.get("xwayland", False))
+    use_xdotool = xwayland and shutil.which("xdotool") is not None
 
     if mode == "terminal":
-        send_by_wtype(text)
+        if use_xdotool:
+            send_by_clipboard(text, lambda: paste_with_xdotool(shift=True))
+        else:
+            send_by_wtype(text)
     elif mode == "im":
-        send_by_clipboard(text, paste_with_crossmacro)
+        if use_xdotool:
+            send_by_clipboard(text, paste_with_xdotool)
+        else:
+            send_by_clipboard(text, paste_with_crossmacro)
     else:
-        send_by_clipboard(text, paste_with_wtype)
+        if use_xdotool:
+            send_by_clipboard(text, paste_with_xdotool)
+        else:
+            send_by_clipboard(text, paste_with_wtype)
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
