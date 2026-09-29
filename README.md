@@ -9,7 +9,7 @@ Built for users who want to use phone's input method (with voice input ) on Linu
 - Use input method of phone
 - Supports Chinese and other Unicode text
 - Works through a local web page
-- Uses `wtype or crossmacro` for Wayland to paste text
+- Pastes through the Wayland clipboard, typing directly where a paste shortcut cannot reach
 - No Bluetooth required
 
 ## Requirements
@@ -20,8 +20,10 @@ Built for users who want to use phone's input method (with voice input ) on Linu
 On Arch Linux:
 
 ```bash
-yay -S wtype crossmarco
+yay -S wtype crossmacro
 ```
+
+`xdotool` is optional and only used for XWayland applications.
 
 ## Usage
 
@@ -56,6 +58,8 @@ edge
 chrome
 vscode
 kitty
+thunar
+yazi
 
 ## Input Behavior
 
@@ -75,19 +79,44 @@ kitty
 
 ## Compatibility Notes
 
-### Direct keyboard simulation
+### How the text gets in
 
-Direct text injection through `wtype text` is not reliable across all Wayland applications.
+Clipboard paste is the default: the text goes on the Wayland clipboard, a paste
+shortcut is synthesised, and the previous clipboard content is put back once the
+paste has been served. The shortcut depends on the focused window:
 
-Observed issues include:
+| Target | Shortcut |
+| --- | --- |
+| terminals (kitty, ghostty, alacritty, ...) | `ctrl+shift+v` |
+| wechat / qq | `crossmacro` |
+| anything else | `ctrl+v` |
 
-- Some browsers may drop the first CJK character.
-- WeChat and QQ may interpret injected text as numbers incorrectly.
-- Using `wtype` to paste may cause the window of wechat and qq to exit unexpectedly.
+Direct text injection (`wtype <text>`) is only used where a paste shortcut is
+known not to arrive at all:
 
-For this reason, Phone IME Bridge uses clipboard-based paste by default 
+- Gtk3 widgets. Verified on Hyprland 0.56 with Thunar 4.20 and with a minimal
+  Gtk3 entry: `ctrl+a`, `ctrl+l`, `ctrl+q`, `ctrl+w` and `ctrl+v` are all no-ops
+  there, while plain characters do arrive, so nothing can be pasted. Gtk4 clients
+  (ghostty, zenity 4) and clients that handle keys themselves (firefox, chromium,
+  alacritty) accept the same chords.
+- Terminals keep pasting instead of typing: TUI applications that forward the
+  kitty keyboard protocol (yazi, nvim, ...) drop the unicode keysyms `wtype`
+  synthesises, so typed CJK never arrives.
 
-and WeChat and QQ require a different paste backend `crossmacro` for reliable operation.
+### wechat and qq need `crossmacro`
 
-Phone IME Bridge automatically detects these applications and switches to a compatible input method.
+`wtype`-driven paste has been reported to make wechat and qq windows exit
+unexpectedly, so those two are sent through `crossmacro` instead. Without
+`crossmacro` installed the code falls back to a `wtype` paste, which is exactly
+the path the warning is about - install it if you send text to them.
 
+### Observations on direct text injection
+
+Measured on Arch Linux + Hyprland 0.56, with firefox 156.0.1 and chromium, in an
+autofocused input field:
+
+- the first CJK character was *not* dropped: `测试abc` arrived complete
+- `ctrl+a` and `ctrl+v` work, so browsers keep the clipboard paste backend
+
+Both observations are version dependent; older browser or toolkit builds may
+still show the quirks the older notes in this README described.
