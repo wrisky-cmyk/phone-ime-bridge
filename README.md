@@ -58,6 +58,7 @@ This fork (Arch Linux, Hyprland 0.56):
 
 - chat and browsers: wechat, qq, telegram, firefox, chromium
 - file managers and tools: thunar, yazi, cc-switch, wps
+- other apps: steam, localsend, moonlight, sparkle
 - terminals: alacritty, ghostty
 
 ## Input Behavior
