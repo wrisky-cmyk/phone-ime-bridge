@@ -50,6 +50,7 @@ Put your cursor in any input field on your computer, type or use voice input on 
 
 ## Tested on
 Arch Linux Niri
+Arch Linux Hyprland
 Android
 wechat
 qq
@@ -60,6 +61,7 @@ vscode
 kitty
 thunar
 yazi
+cc-switch
 
 ## Input Behavior
 
