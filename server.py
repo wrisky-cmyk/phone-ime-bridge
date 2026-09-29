@@ -16,6 +16,12 @@ WEB_DIR = Path(__file__).parent / "web"
 # clipboard content must not be put back before the paste was served.
 PASTE_SETTLE_SECONDS = 0.3
 
+# Clients that ignore the ctrl chords wtype synthesises, so the paste shortcut
+# never fires there. Verified with thunar 4.20 (gtk3) on hyprland 0.56:
+# ctrl+a, ctrl+l, ctrl+q, ctrl+w and ctrl+v are all no-ops while plain
+# characters do arrive, so type the text instead of pasting it.
+TYPED_APPS = ("thunar", "cc-switch")
+
 
 def get_focused_window():
     # Niri
@@ -157,13 +163,23 @@ def send_by_clipboard(text: str, paste_func):
         set_clipboard(old)
 
 
+def send_by_wtype(text: str):
+    subprocess.run(
+        ["wtype", text],
+        check=False,
+    )
+
+
 def send_text(text: str):
     win = get_focused_window()
     mode = detect_mode(win)
+    app_id = win["app_id"]
     xwayland = bool(win.get("xwayland", False))
     use_xdotool = xwayland and shutil.which("xdotool") is not None
 
-    if mode == "terminal":
+    if any(x in app_id for x in TYPED_APPS):
+        send_by_wtype(text)
+    elif mode == "terminal":
         # wtype types text through the keymap, and terminals that forward the
         # kitty keyboard protocol (yazi, nvim, ...) drop the unicode keysyms
         # wtype synthesises. Paste with ctrl+shift+v instead, like terminals
