@@ -49,19 +49,12 @@ http://YOUR_COMPUTER_IP:8765
 Put your cursor in any input field on your computer, type or use voice input on your phone, then press send.
 
 ## Tested on
-Arch Linux Niri
-Arch Linux Hyprland
-Android
-wechat
-qq
-firefox
-edge
-chrome
-vscode
-kitty
-thunar
-yazi
-cc-switch
+
+Phone: Android
+
+Upstream (Arch Linux, Niri): wechat, qq, firefox, edge, chrome, vscode, kitty
+
+This fork (Arch Linux, Hyprland 0.56): firefox, chromium, thunar, yazi, cc-switch
 
 ## Input Behavior
 
