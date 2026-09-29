@@ -87,7 +87,7 @@ paste has been served. The shortcut depends on the focused window:
 | Target | Shortcut |
 | --- | --- |
 | terminals (kitty, ghostty, alacritty, ...) | `ctrl+shift+v` |
-| wechat / qq | `crossmacro` |
+| wechat / qq | `crossmacro` when installed, otherwise `ctrl+v` |
 | anything else | `ctrl+v` |
 
 Direct text injection (`wtype <text>`) is only used where a paste shortcut is
@@ -102,12 +102,16 @@ known not to arrive at all:
   kitty keyboard protocol (yazi, nvim, ...) drop the unicode keysyms `wtype`
   synthesises, so typed CJK never arrives.
 
-### wechat and qq need `crossmacro`
+### wechat and qq
 
-`wtype`-driven paste has been reported to make wechat and qq windows exit
-unexpectedly, so those two are sent through `crossmacro` instead. Without
-`crossmacro` installed the code falls back to a `wtype` paste, which is exactly
-the path the warning is about - install it if you send text to them.
+Upstream routes these two through `crossmacro`, because `wtype`-driven paste had
+been reported to make their windows exit unexpectedly, and to make injected text
+come out as numbers.
+
+On this fork's setup (Arch Linux + Hyprland 0.56) `crossmacro` is **not**
+installed, so every wechat/qq send went through the `wtype` paste fallback, and
+neither problem showed up: the windows stayed open and the text arrived. Install
+`crossmacro` if you do run into them - the code uses it whenever it is present.
 
 ### Observations on direct text injection
 
