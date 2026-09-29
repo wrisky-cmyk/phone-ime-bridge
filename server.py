@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs
 from pathlib import Path
+import re
 import shutil
 import subprocess
+import threading
 import time
 import json
 
@@ -16,11 +18,58 @@ WEB_DIR = Path(__file__).parent / "web"
 # clipboard content must not be put back before the paste was served.
 PASTE_SETTLE_SECONDS = 0.3
 
-# Clients that ignore the ctrl chords wtype synthesises, so the paste shortcut
-# never fires there. Verified with thunar 4.20 (gtk3) on hyprland 0.56:
-# ctrl+a, ctrl+l, ctrl+q, ctrl+w and ctrl+v are all no-ops while plain
-# characters do arrive, so type the text instead of pasting it.
+IM_APPS = ("wechat", "weixin", "qq")
+BROWSER_APPS = ("firefox", "chromium", "chrome", "brave", "edge", "zen")
+TERMINAL_APPS = (
+    "foot",
+    "kitty",
+    "ghostty",
+    "alacritty",
+    "wezterm",
+    "terminator",
+    "gnome-terminal",
+    "org.gnome.terminal",
+    "x-terminal-emulator",
+    "xfce4-terminal",
+    "konsole",
+)
+
+# Fallback for clients whose /proc entry we cannot read; gtk3 clients are
+# normally detected at runtime by is_gtk3_client().
 TYPED_APPS = ("thunar", "cc-switch")
+
+# One paste at a time: the clipboard dance in send_by_clipboard() is not
+# safe to interleave, and request threads share the clipboard.
+_send_lock = threading.Lock()
+
+
+def app_id_matches(app_id: str, names) -> bool:
+    """Match an app id exactly or as a whole word, so "zen" != "zenity"."""
+    tokens = re.split(r"[-_.]", app_id)
+    return any(name == app_id or name in tokens for name in names)
+
+
+def is_gtk3_client(pid) -> bool:
+    """Whether the window's process links gtk3.
+
+    gtk3 clients ignore the ctrl chords wtype synthesises (verified with
+    thunar 4.20 on hyprland 0.56: ctrl+a, ctrl+l, ctrl+q, ctrl+w and ctrl+v
+    are all no-ops while plain characters do arrive), so a paste never
+    reaches them and the text has to be typed instead.
+    """
+    if not pid:
+        return False
+    try:
+        with open(f"/proc/{pid}/maps", "rb") as maps:
+            return b"libgtk-3.so" in maps.read()
+    except OSError:
+        return False
+
+
+def types_text_directly(win) -> bool:
+    if app_id_matches(win["app_id"], TYPED_APPS):
+        return True
+    return is_gtk3_client(win.get("pid"))
 
 
 def get_focused_window():
@@ -39,6 +88,7 @@ def get_focused_window():
                         "app_id": (win.get("app_id") or "").lower(),
                         "title": (win.get("title") or "").lower(),
                         "xwayland": bool(win.get("is_x11", False)),
+                        "pid": win.get("pid"),
                     }
         except Exception as e:
             print("get focused window (niri) failed:", e)
@@ -58,11 +108,12 @@ def get_focused_window():
                     "app_id": (data.get("class") or data.get("initialClass") or "").lower(),
                     "title": (data.get("title") or "").lower(),
                     "xwayland": bool(data.get("xwayland", False)),
+                    "pid": data.get("pid"),
                 }
         except Exception as e:
             print("get focused window (hyprland) failed:", e)
 
-    return {"app_id": "", "title": "", "xwayland": False}
+    return {"app_id": "", "title": "", "xwayland": False, "pid": None}
 
 
 def detect_mode(win=None):
@@ -73,28 +124,21 @@ def detect_mode(win=None):
 
     print("focused:", app_id, "|", title, "| xwayland:", win.get("xwayland", False))
 
-    if any(x in app_id for x in ["wechat", "weixin", "qq"]) or any(
-        x in title for x in ["微信", "qq"]
-    ):
+    if app_id_matches(app_id, IM_APPS):
         return "im"
 
-    if any(x in app_id for x in ["firefox", "chromium", "chrome", "brave", "edge", "zen"]):
+    if app_id_matches(app_id, BROWSER_APPS):
         return "browser"
 
-    if any(x in app_id for x in [
-        "foot",
-        "kitty",
-        "ghostty",
-        "alacritty",
-        "wezterm",
-        "terminator",
-        "gnome-terminal",
-        "org.gnome.terminal",
-        "x-terminal-emulator",
-        "xfce4-terminal",
-        "konsole",
-    ]):
+    if app_id_matches(app_id, TERMINAL_APPS):
         return "terminal"
+
+    # Some im clients do not report a usable app id. Only fall back to the
+    # window title after the classes above had their chance, so a browser tab
+    # titled "QQ mail" is not mistaken for the im app.
+    if any(x in title for x in ["微信", "qq"]):
+        return "im"
+
     return "normal"
 
 
@@ -173,11 +217,13 @@ def send_by_wtype(text: str):
 def send_text(text: str):
     win = get_focused_window()
     mode = detect_mode(win)
-    app_id = win["app_id"]
     xwayland = bool(win.get("xwayland", False))
     use_xdotool = xwayland and shutil.which("xdotool") is not None
 
-    if any(x in app_id for x in TYPED_APPS):
+    if mode == "normal" and types_text_directly(win):
+        # These clients drop the synthesised ctrl chords, so ctrl+v never
+        # fires and pasting would silently do nothing. Typing does reach them:
+        # plain characters arrive even where ctrl+v does not.
         send_by_wtype(text)
     elif mode == "terminal":
         # wtype types text through the keymap, and terminals that forward the
@@ -210,12 +256,13 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         length = int(self.headers.get("Content-Length", 0))
-        body = self.rfile.read(length).decode("utf-8")
+        body = self.rfile.read(length).decode("utf-8", errors="replace")
 
         text = parse_qs(body).get("text", [""])[0]
 
-        if text!="":
-            send_text(text)
+        if text != "":
+            with _send_lock:
+                send_text(text)
 
         self.send_response(303)
         self.send_header("Location", "/")
@@ -227,4 +274,4 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     print(f"Phone IME Bridge running on http://{HOST}:{PORT}")
-    HTTPServer((HOST, PORT), Handler).serve_forever()
+    ThreadingHTTPServer((HOST, PORT), Handler).serve_forever()
