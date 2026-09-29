@@ -12,43 +12,49 @@ HOST = "0.0.0.0"
 PORT = 8765
 WEB_DIR = Path(__file__).parent / "web"
 
+# The focused app fetches the selection asynchronously, so the previous
+# clipboard content must not be put back before the paste was served.
+PASTE_SETTLE_SECONDS = 0.3
+
 
 def get_focused_window():
     # Niri
-    try:
-        r = subprocess.run(
-            ["niri", "msg", "--json", "windows"],
-            text=True,
-            capture_output=True,
-            check=True,
-        )
-        for win in json.loads(r.stdout):
-            if win.get("is_focused"):
-                return {
-                    "app_id": (win.get("app_id") or "").lower(),
-                    "title": (win.get("title") or "").lower(),
-                    "xwayland": bool(win.get("is_x11", False)),
-                }
-    except Exception as e:
-        print("get focused window failed:", e)
+    if shutil.which("niri"):
+        try:
+            r = subprocess.run(
+                ["niri", "msg", "--json", "windows"],
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            for win in json.loads(r.stdout):
+                if win.get("is_focused"):
+                    return {
+                        "app_id": (win.get("app_id") or "").lower(),
+                        "title": (win.get("title") or "").lower(),
+                        "xwayland": bool(win.get("is_x11", False)),
+                    }
+        except Exception as e:
+            print("get focused window (niri) failed:", e)
 
     # Hyprland
-    try:
-        r = subprocess.run(
-            ["hyprctl", "activewindow", "-j"],
-            text=True,
-            capture_output=True,
-            check=True,
-        )
-        data = json.loads(r.stdout)
-        if isinstance(data, dict):
-            return {
-                "app_id": (data.get("class") or data.get("initialClass") or "").lower(),
-                "title": (data.get("title") or "").lower(),
-                "xwayland": bool(data.get("xwayland", False)),
-            }
-    except Exception as e:
-        print("get focused window (hyprland) failed:", e)
+    if shutil.which("hyprctl"):
+        try:
+            r = subprocess.run(
+                ["hyprctl", "activewindow", "-j"],
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            data = json.loads(r.stdout)
+            if isinstance(data, dict):
+                return {
+                    "app_id": (data.get("class") or data.get("initialClass") or "").lower(),
+                    "title": (data.get("title") or "").lower(),
+                    "xwayland": bool(data.get("xwayland", False)),
+                }
+        except Exception as e:
+            print("get focused window (hyprland) failed:", e)
 
     return {"app_id": "", "title": "", "xwayland": False}
 
@@ -86,14 +92,16 @@ def detect_mode(win=None):
     return "normal"
 
 
-def get_clipboard() -> str:
+def get_clipboard():
+    # None means "no clipboard text", e.g. the clipboard holds an image.
     r = subprocess.run(
-        ["wl-paste"],
-        text=True,
+        ["wl-paste", "--no-newline", "--type", "text"],
         capture_output=True,
         check=False,
     )
-    return r.stdout if r.returncode == 0 else ""
+    if r.returncode != 0:
+        return None
+    return r.stdout.decode("utf-8", errors="replace")
 
 
 def set_clipboard(text: str):
@@ -102,12 +110,18 @@ def set_clipboard(text: str):
         input=text,
         text=True,
         check=False,
+        # wl-copy forks a daemon that owns the selection; keep it from
+        # inheriting (and holding open) our stdout/stderr.
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
     )
 
 
-def paste_with_wtype():
+def paste_with_wtype(shift: bool = False):
+    release = ["-m", "shift", "-m", "ctrl"] if shift else ["-m", "ctrl"]
+    press = ["-M", "ctrl", "-M", "shift"] if shift else ["-M", "ctrl"]
     subprocess.run(
-        ["wtype", "-M", "ctrl", "-k", "v", "-m", "ctrl"],
+        ["wtype", *press, "-k", "v", *release],
         check=False,
     )
 
@@ -136,13 +150,12 @@ def send_by_clipboard(text: str, paste_func):
 
     set_clipboard(text)
     paste_func()
-    set_clipboard(old)
+    time.sleep(PASTE_SETTLE_SECONDS)
+    # Restore only if the clipboard still holds our text: the user may have
+    # copied something else while we were pasting.
+    if old is not None and get_clipboard() == text:
+        set_clipboard(old)
 
-def send_by_wtype(text: str):
-    subprocess.run(
-        ["wtype", text],
-        check=False,
-    )
 
 def send_text(text: str):
     win = get_focused_window()
@@ -151,10 +164,14 @@ def send_text(text: str):
     use_xdotool = xwayland and shutil.which("xdotool") is not None
 
     if mode == "terminal":
+        # wtype types text through the keymap, and terminals that forward the
+        # kitty keyboard protocol (yazi, nvim, ...) drop the unicode keysyms
+        # wtype synthesises. Paste with ctrl+shift+v instead, like terminals
+        # under XWayland already do.
         if use_xdotool:
             send_by_clipboard(text, lambda: paste_with_xdotool(shift=True))
         else:
-            send_by_wtype(text)
+            send_by_clipboard(text, lambda: paste_with_wtype(shift=True))
     elif mode == "im":
         if use_xdotool:
             send_by_clipboard(text, paste_with_xdotool)
