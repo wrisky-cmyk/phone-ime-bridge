@@ -34,8 +34,8 @@ TERMINAL_APPS = (
     "konsole",
 )
 
-# Fallback for clients whose /proc entry we cannot read; gtk3 clients are
-# normally detected at runtime by is_gtk3_client().
+# Only consulted when detect_gtk3() cannot answer (a window owned by another
+# user, or a restricted /proc). Normal runs decide from the toolkit alone.
 TYPED_APPS = ("thunar", "cc-switch")
 
 # One paste at a time: the clipboard dance in send_by_clipboard() is not
@@ -49,8 +49,8 @@ def app_id_matches(app_id: str, names) -> bool:
     return any(name == app_id or name in tokens for name in names)
 
 
-def is_gtk3_client(pid) -> bool:
-    """Whether the window's process links gtk3.
+def detect_gtk3(pid):
+    """Whether the window's process links gtk3, or None when we cannot tell.
 
     gtk3 clients ignore the ctrl chords wtype synthesises (verified with
     thunar 4.20 on hyprland 0.56: ctrl+a, ctrl+l, ctrl+q, ctrl+w and ctrl+v
@@ -58,18 +58,19 @@ def is_gtk3_client(pid) -> bool:
     reaches them and the text has to be typed instead.
     """
     if not pid:
-        return False
+        return None
     try:
         with open(f"/proc/{pid}/maps", "rb") as maps:
             return b"libgtk-3.so" in maps.read()
     except OSError:
-        return False
+        return None
 
 
 def types_text_directly(win) -> bool:
-    if app_id_matches(win["app_id"], TYPED_APPS):
-        return True
-    return is_gtk3_client(win.get("pid"))
+    gtk3 = detect_gtk3(win.get("pid"))
+    if gtk3 is not None:
+        return gtk3
+    return app_id_matches(win["app_id"], TYPED_APPS)
 
 
 def get_focused_window():
